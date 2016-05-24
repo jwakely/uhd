@@ -179,7 +179,7 @@ static const ubx_gpio_field_info_t ubx_v1_gpio_info[] = {
     //Field         Unit                  Offset Mask      Width    Direction                   ATR    IDLE,TX,RX,FDX
     {SPI_ADDR,      dboard_iface::UNIT_TX,   0,  0x7,        3,  ubx_gpio_field_info_t::INPUT,  false,  0,  0,  0,  0},
     {CPLD_RST_N,    dboard_iface::UNIT_TX,   3,  0x1<<3,     1,  ubx_gpio_field_info_t::INPUT,  false,  0,  0,  0,  0},
-    {RX_ANT,        dboard_iface::UNIT_TX,   4,  0x1<<4,     1,  ubx_gpio_field_info_t::INPUT,  false,  0,  0,  0,  0},
+    {RX_ANT,        dboard_iface::UNIT_TX,   4,  0x1<<4,     1,  ubx_gpio_field_info_t::INPUT,  true,   1,  1,  1,  1},
     {TX_EN_N,       dboard_iface::UNIT_TX,   5,  0x1<<5,     1,  ubx_gpio_field_info_t::INPUT,  true,   1,  0,  1,  0},
     {RX_EN_N,       dboard_iface::UNIT_TX,   6,  0x1<<6,     1,  ubx_gpio_field_info_t::INPUT,  true,   1,  1,  0,  0},
     {TXLO1_SYNC,    dboard_iface::UNIT_TX,   7,  0x1<<7,     1,  ubx_gpio_field_info_t::INPUT,  true,   0,  0,  0,  0},
@@ -693,13 +693,24 @@ private:
         //validate input
         assert_has(ubx_rx_antennas, ant, "ubx rx antenna name");
 
-        if(ant == "RX2")
-            set_gpio_field(RX_ANT, 1);
-        else if(ant == "TX/RX")
-            set_gpio_field(RX_ANT, 0);
-        else if (ant == "CAL")
-            set_gpio_field(RX_ANT, 1);
-        write_gpio();
+        // IMPORTANT NOTE:
+        // The RX_ANT and TXDRV_FORCEON settings below are required to avoid a high noise floor
+        // when receiving on the TX/RX port and a long transient at the beginning of transmitting.
+
+        // Antenna selection is always RX2 when transmitting, so only change idle and RX settings
+        std::map<ubx_gpio_field_id_t,ubx_gpio_field_info_t>::iterator entry = _gpio_map.find(RX_ANT);
+        ubx_gpio_field_info_t field_info = entry->second;
+        if (ant == "TX/RX")
+        {
+            _iface->set_atr_reg(field_info.unit, dboard_iface::ATR_REG_IDLE, 0, field_info.mask);
+            _iface->set_atr_reg(field_info.unit, dboard_iface::ATR_REG_RX_ONLY, 0, field_info.mask);
+        } else {
+            _iface->set_atr_reg(field_info.unit, dboard_iface::ATR_REG_IDLE, 1, field_info.mask);
+            _iface->set_atr_reg(field_info.unit, dboard_iface::ATR_REG_RX_ONLY, 1, field_info.mask);
+        }
+        // Turn off TX PA if TDD and on in all other cases
+        set_cpld_field(TXDRV_FORCEON, ant == "TX/RX" ? 0 : 1);
+        write_cpld_reg();
     }
 
     /***********************************************************************
@@ -1070,24 +1081,24 @@ private:
         boost::mutex::scoped_lock lock(_mutex);
         if (mode == "performance")
         {
-            // FIXME:  Response to ATR change is too slow for some components,
-            // so certain components are forced on here.  Force on does not
-            // necessarily mean immediately.  Some FORCEON lines are still gated
+            // Placeholders in case some components need to be forced on to
+            // reduce settling time.  Note that some FORCEON lines are still gated
             // by other bits in the CPLD register that are asserted during
             // frequency tuning.
-            set_cpld_field(RXAMP_FORCEON, 1);
-            set_cpld_field(RXDEMOD_FORCEON, 1);
-            set_cpld_field(RXDRV_FORCEON, 1);
-            set_cpld_field(RXMIXER_FORCEON, 1);
-            set_cpld_field(RXLO1_FORCEON, 1);
-            set_cpld_field(RXLO2_FORCEON, 1);
-            set_cpld_field(RXLNA1_FORCEON, 1);
-            set_cpld_field(RXLNA2_FORCEON, 1);
+            set_cpld_field(RXAMP_FORCEON, 0);
+            set_cpld_field(RXDEMOD_FORCEON, 0);
+            set_cpld_field(RXDRV_FORCEON, 0);
+            set_cpld_field(RXMIXER_FORCEON, 0);
+            set_cpld_field(RXLO1_FORCEON, 0);
+            set_cpld_field(RXLO2_FORCEON, 0);
+            set_cpld_field(RXLNA1_FORCEON, 0);
+            set_cpld_field(RXLNA2_FORCEON, 0);
+            // TX PA is forced on to avoid transient at beginning of transmission
             set_cpld_field(TXDRV_FORCEON, 1);
-            set_cpld_field(TXMOD_FORCEON, 1);
-            set_cpld_field(TXMIXER_FORCEON, 1);
-            set_cpld_field(TXLO1_FORCEON, 1);
-            set_cpld_field(TXLO2_FORCEON, 1);
+            set_cpld_field(TXMOD_FORCEON, 0);
+            set_cpld_field(TXMIXER_FORCEON, 0);
+            set_cpld_field(TXLO1_FORCEON, 0);
+            set_cpld_field(TXLO2_FORCEON, 0);
             _power_mode = PERFORMANCE;
         }
         else if (mode == "powersave")
@@ -1100,7 +1111,8 @@ private:
             set_cpld_field(RXLO2_FORCEON, 0);
             set_cpld_field(RXLNA1_FORCEON, 0);
             set_cpld_field(RXLNA2_FORCEON, 0);
-            set_cpld_field(TXDRV_FORCEON, 0);
+            // TX PA is forced on to avoid transient at beginning of transmission
+            set_cpld_field(TXDRV_FORCEON, 1);
             set_cpld_field(TXMOD_FORCEON, 0);
             set_cpld_field(TXMIXER_FORCEON, 0);
             set_cpld_field(TXLO1_FORCEON, 0);
